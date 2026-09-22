@@ -1,0 +1,22 @@
+{
+  "name": "guardrail-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "react-router-dom": "^6.26.0",
+    "axios": "^1.7.0",
+    "d3": "^7.9.0",
+    "recharts": "^2.12.0",
+    "lucide-react": "^0.400.0",
+    "tailwindcss": "^3.4.0"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  },
+  "devDependencies": {
+    "react-scripts": "5.0.1"
+  }
+}
