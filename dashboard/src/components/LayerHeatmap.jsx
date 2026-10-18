@@ -25,8 +25,9 @@ export default function LayerHeatmap({ data = [] }) {
     const x = d3.scaleBand().domain(layers).range([margin.left, width - margin.right]).padding(0.05);
     const y = d3.scaleBand().domain(labels).range([margin.top, height - margin.bottom]).padding(0.05);
 
+    const maxCount = d3.max(data, (d) => d.count) || 0;
     const color = d3.scaleSequential(d3.interpolateReds)
-      .domain([0, d3.max(data, (d) => d.count)]);
+      .domain([0, Math.max(1, maxCount)]);
 
     svg.append("g")
       .attr("transform", `translate(0,${height - margin.bottom})`)
@@ -43,7 +44,7 @@ export default function LayerHeatmap({ data = [] }) {
       .attr("y", (d) => y(d.label))
       .attr("width", x.bandwidth())
       .attr("height", y.bandwidth())
-      .attr("fill", (d) => color(d.count))
+      .attr("fill", (d) => (d.count > 0 ? color(d.count) : "rgba(255, 255, 255, 0.06)"))
       .append("title")
       .text((d) => `${d.layer} / ${d.label}: ${d.count}`);
   }, [data]);

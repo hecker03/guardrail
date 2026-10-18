@@ -59,11 +59,6 @@ class HMACVerifier:
             message.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-
-        # Track nonce to prevent reuse
-        self._used_nonces[nonce] = timestamp + self.cfg.HMAC_TIMESTAMP_TOLERANCE_SEC
-        self._gc_nonces()
-
         return signature, nonce, timestamp, message
 
     # ------------------------------------------------------------------ #

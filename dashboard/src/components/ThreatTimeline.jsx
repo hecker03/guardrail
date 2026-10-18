@@ -24,9 +24,20 @@ export default function ThreatTimeline({ data = [] }) {
       .domain(d3.extent(data, (d) => new Date(d.timestamp)))
       .range([margin.left, width - margin.right]);
 
+    // Stacked areas by label (S0–S4)
+    const labels = ["S0", "S1", "S2", "S3", "S4"];
+    const colors = d3.scaleOrdinal()
+      .domain(labels)
+      .range(["#10b981", "#f59e0b", "#f97316", "#ef4444", "#7f1d1d"]);
+
+    const stack = d3.stack().keys(labels);
+    const series = stack(data);
+
+    const maxY = d3.max(series, (s) => d3.max(s, (d) => d[1])) || 10;
+
     const y = d3
       .scaleLinear()
-      .domain([0, d3.max(data, (d) => d.count)])
+      .domain([0, maxY])
       .nice()
       .range([height - margin.bottom, margin.top]);
 
@@ -41,15 +52,6 @@ export default function ThreatTimeline({ data = [] }) {
       .append("g")
       .attr("transform", `translate(${margin.left},0)`)
       .call(d3.axisLeft(y).ticks(5));
-
-    // Stacked areas by label (S0–S4)
-    const labels = ["S0", "S1", "S2", "S3", "S4"];
-    const colors = d3.scaleOrdinal()
-      .domain(labels)
-      .range(["#10b981", "#f59e0b", "#f97316", "#ef4444", "#7f1d1d"]);
-
-    const stack = d3.stack().keys(labels);
-    const series = stack(data);
 
     const area = d3
       .area()
