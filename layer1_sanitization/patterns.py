@@ -13,8 +13,14 @@ class PatternMatcher:
     # (name, regex, threat_score)
     PATTERNS: List[Tuple[str, re.Pattern, float]] = [
         ("ignore_instructions",
-         re.compile(r"\b(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)", re.I),
-         0.85),
+        re.compile(
+            r"(?:ignore|disregard|forget)\b\s+"
+            r"(?:all\s+)?"
+            r"(?:previous|prior|above)\s+"
+            r"(?:instructions?|prompts?|rules?)\b",
+            re.I,
+        ),
+        0.85),
 
         ("system_prompt_leak",
          re.compile(r"\b(reveal|show|print|output|repeat)\s+(your\s+)?(system\s+)?(prompt|instructions?|rules?)", re.I),

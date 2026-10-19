@@ -1,11 +1,14 @@
 # guardrail/api/db.py
 
+import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, String, Float, DateTime, Integer, JSON
 from datetime import datetime
 
-DATABASE_URL = "postgresql+asyncpg://guardrail:guardrail@localhost/guardrail"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql+asyncpg://guardrail:guardrail@localhost/guardrail"
+)
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

@@ -1,128 +1,99 @@
-# guardrail/layer2_isolation/hmac_verifier.py
+from __future__ import annotations
 
-import hmac
 import hashlib
-import os
-import time
+import hmac
+import json
 import secrets
-from typing import Tuple, Optional
+import threading
+import time
+from typing import Any, Dict, Optional, Tuple
 from .config import IsolationConfig, DEFAULT_CONFIG
 
 
 class HMACVerifier:
-    """
-    Cryptographic integrity layer for system prompts and request payloads.
+    """Canonical HMAC-SHA256 signing with bounded in-process replay detection.
 
-    Responsibilities:
-      - Generate per-request nonce + timestamp
-      - Compute HMAC-SHA256 over (system_prompt || nonce || timestamp)
-      - Verify incoming signatures against expected values
-      - Detect replay attacks via timestamp window
+    The in-memory nonce store is correct for a single process. A shared atomic
+    store (for example Redis SET NX with TTL) is still required for multi-worker
+    or multi-instance deployment.
     """
 
-    def __init__(
-        self,
-        secret_key: Optional[bytes] = None,
-        config: IsolationConfig = DEFAULT_CONFIG,
-    ):
+    def __init__(self, secret_key: Optional[bytes] = None, config: IsolationConfig = DEFAULT_CONFIG):
         self.cfg = config
-        self.secret_key = secret_key or self._generate_key()
-        self._used_nonces: dict = {}   # nonce -> expiry (in-memory; use Redis in prod)
-
-    # ------------------------------------------------------------------ #
-    # Key management
-    # ------------------------------------------------------------------ #
-    def _generate_key(self) -> bytes:
-        """Generate a cryptographically secure 256-bit key."""
-        return secrets.token_bytes(self.cfg.HMAC_KEY_BYTES)
+        self.secret_key = secret_key or secrets.token_bytes(self.cfg.HMAC_KEY_BYTES)
+        if len(self.secret_key) < self.cfg.HMAC_KEY_BYTES:
+            raise ValueError(f"HMAC key must be at least {self.cfg.HMAC_KEY_BYTES} bytes")
+        self._used_nonces: Dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def rotate_key(self) -> bytes:
-        """Rotate the HMAC key (for key-compromise recovery)."""
-        self.secret_key = self._generate_key()
+        self.secret_key = secrets.token_bytes(self.cfg.HMAC_KEY_BYTES)
+        with self._lock:
+            self._used_nonces.clear()
         return self.secret_key
 
-    # ------------------------------------------------------------------ #
-    # Signing
-    # ------------------------------------------------------------------ #
-    def sign(self, system_prompt: str) -> Tuple[str, str, int, str]:
-        """
-        Sign a system prompt.
-
-        Returns:
-            (signature_hex, nonce_hex, timestamp, canonical_message)
-        """
+    def sign_payload(self, payload: Dict[str, Any]) -> Tuple[str, str, int, str]:
         nonce = secrets.token_hex(self.cfg.HMAC_NONCE_BYTES)
         timestamp = int(time.time())
-        message = self._canonical_message(system_prompt, nonce, timestamp)
-        signature = hmac.new(
-            self.secret_key,
-            message.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        return signature, nonce, timestamp, message
+        message = self._canonical_payload(payload, nonce, timestamp)
+        return self._mac(message), nonce, timestamp, message
 
-    # ------------------------------------------------------------------ #
-    # Verification
-    # ------------------------------------------------------------------ #
-    def verify(
-        self,
-        system_prompt: str,
-        signature: str,
-        nonce: str,
-        timestamp: int,
-    ) -> Tuple[bool, str]:
-        """
-        Verify an HMAC signature.
-
-        Returns:
-            (is_valid, status_reason)
-        """
-        # ---- 1) Timestamp window ----
+    def verify_payload(self, payload: Dict[str, Any], signature: str, nonce: str, timestamp: int) -> Tuple[bool, str]:
         now = int(time.time())
-        if abs(now - timestamp) > self.cfg.HMAC_TIMESTAMP_TOLERANCE_SEC:
+        if not isinstance(timestamp, int) or abs(now - timestamp) > self.cfg.HMAC_TIMESTAMP_TOLERANCE_SEC:
             return False, "expired"
-
-        # ---- 2) Nonce replay check ----
-        if nonce in self._used_nonces and self._used_nonces[nonce] > now:
-            return False, "nonce_replay"
-
-        # ---- 3) Format validation ----
-        if not signature or len(signature) != self.cfg.HMAC_SIGNATURE_LENGTH:
+        if not self._valid_hex(signature, self.cfg.HMAC_SIGNATURE_LENGTH):
+            return False, "invalid_format"
+        if not self._valid_hex(nonce, self.cfg.HMAC_NONCE_BYTES * 2):
             return False, "invalid_format"
 
-        # ---- 4) Recompute + constant-time compare ----
-        message = self._canonical_message(system_prompt, nonce, timestamp)
-        expected = hmac.new(
-            self.secret_key,
-            message.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-
-        if not hmac.compare_digest(expected, signature):
+        message = self._canonical_payload(payload, nonce, timestamp)
+        if not hmac.compare_digest(self._mac(message), signature.lower()):
             return False, "mismatch"
 
-        # Mark nonce as used
-        self._used_nonces[nonce] = timestamp + self.cfg.HMAC_TIMESTAMP_TOLERANCE_SEC
+        # Check and consume atomically only after cryptographic verification.
+        with self._lock:
+            self._gc_nonces(now)
+            if self._used_nonces.get(nonce, 0) > now:
+                return False, "nonce_replay"
+            self._used_nonces[nonce] = now + self.cfg.HMAC_TIMESTAMP_TOLERANCE_SEC
         return True, "verified"
 
-    # ------------------------------------------------------------------ #
-    # Prompt hashing (for audit logs)
-    # ------------------------------------------------------------------ #
-    def hash_prompt(self, prompt: str) -> str:
-        """Deterministic prompt hash for audit logging."""
+    # Backward-compatible prompt-only helpers. ContextIsolator uses payload APIs.
+    def sign(self, system_prompt: str) -> Tuple[str, str, int, str]:
+        return self.sign_payload({"system_prompt": system_prompt})
+
+    def verify(self, system_prompt: str, signature: str, nonce: str, timestamp: int) -> Tuple[bool, str]:
+        return self.verify_payload({"system_prompt": system_prompt}, signature, nonce, timestamp)
+
+    @staticmethod
+    def hash_prompt(prompt: str) -> str:
         return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
-    # ------------------------------------------------------------------ #
-    # Internals
-    # ------------------------------------------------------------------ #
     @staticmethod
-    def _canonical_message(prompt: str, nonce: str, timestamp: int) -> str:
-        """Canonical string used for HMAC computation."""
-        return f"{prompt}|{nonce}|{timestamp}"
+    def hash_payload(payload: Dict[str, Any]) -> str:
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def _gc_nonces(self) -> None:
-        """Garbage-collect expired nonces."""
-        now = int(time.time())
-        expired = [n for n, exp in self._used_nonces.items() if exp < now]
-        for n in expired:
-            del self._used_nonces[n]
+    @staticmethod
+    def _canonical_payload(payload: Dict[str, Any], nonce: str, timestamp: int) -> str:
+        envelope = {"nonce": nonce, "payload": payload, "timestamp": timestamp}
+        return json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _mac(self, message: str) -> str:
+        return hmac.new(self.secret_key, message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _valid_hex(value: str, length: int) -> bool:
+        if not isinstance(value, str) or len(value) != length:
+            return False
+        try:
+            int(value, 16)
+            return True
+        except ValueError:
+            return False
+
+    def _gc_nonces(self, now: Optional[int] = None) -> None:
+        now = int(time.time()) if now is None else now
+        for nonce in [n for n, expiry in self._used_nonces.items() if expiry <= now]:
+            del self._used_nonces[nonce]

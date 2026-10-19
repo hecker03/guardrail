@@ -1,5 +1,22 @@
-node_modules/
-**/node_modules/
+# Python
 .venv/
+venv/
 __pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secrets and local environment
 .env
+.env.local
+.env.*
+!.env.example
+dashboard/.env.local
+
+# React
+dashboard/node_modules/
+dashboard/build/
+
+# IDE and operating system
+.vscode/
+.DS_Store
+Thumbs.db

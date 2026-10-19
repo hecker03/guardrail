@@ -1,80 +1,72 @@
-# guardrail/layer5_output_filter/pii_detector.py
-
-from typing import List, Tuple
+import ipaddress
+import re
+from typing import List
 from .config import PII_PATTERNS
 from .models import PIIMatch
 
 
 class PIIDetector:
-    """
-    Detects PII / secrets in LLM output.
-
-    Regex-first (fast, deterministic). Optional transformer NER
-    (spaCy en_core_web_trf) can be layered on top for names/addresses.
-    """
+    """Deterministic PII/secret detection with basic format validation."""
 
     def __init__(self, use_ner: bool = False):
         self.patterns = PII_PATTERNS
         self.use_ner = use_ner
         self._ner = None
-
         if use_ner:
             try:
                 import spacy
                 self._ner = spacy.load("en_core_web_trf")
             except Exception:
-                self.use_ner = False   # graceful fallback
+                self.use_ner = False
 
-    # ------------------------------------------------------------------ #
-    # Public
-    # ------------------------------------------------------------------ #
     def detect(self, text: str) -> List[PIIMatch]:
         if not text:
             return []
-
         matches: List[PIIMatch] = []
-
-        # ---- Regex pass ----
         for pii_type, pattern in self.patterns.items():
-            for m in pattern.finditer(text):
+            for found in pattern.finditer(text):
+                value = found.group(0)
+                if not self._valid(pii_type, value):
+                    continue
                 matches.append(PIIMatch(
-                    pii_type=pii_type,
-                    start=m.start(),
-                    end=m.end(),
-                    snippet=m.group(0),
-                    masked="",     # filled by masker
+                    pii_type=pii_type, start=found.start(), end=found.end(),
+                    snippet=value, masked="",
                 ))
 
-        # ---- NER pass (optional) ----
         if self.use_ner and self._ner:
-            doc = self._ner(text)
-            for ent in doc.ents:
-                if ent.label_ in ("PERSON", "GPE", "ORG", "LOC"):
+            for entity in self._ner(text).ents:
+                if entity.label_ in ("PERSON", "GPE", "ORG", "LOC"):
                     matches.append(PIIMatch(
-                        pii_type=f"NER_{ent.label_}",
-                        start=ent.start_char,
-                        end=ent.end_char,
-                        snippet=ent.text,
-                        masked="",
+                        pii_type=f"NER_{entity.label_}", start=entity.start_char,
+                        end=entity.end_char, snippet=entity.text, masked="",
                     ))
+        return sorted(self._dedupe(matches), key=lambda item: item.start)
 
-        # Deduplicate & sort
-        matches = self._dedupe(matches)
-        return sorted(matches, key=lambda m: m.start)
+    @staticmethod
+    def _valid(pii_type: str, value: str) -> bool:
+        if pii_type == "IPV4":
+            try:
+                ipaddress.IPv4Address(value)
+                return True
+            except ipaddress.AddressValueError:
+                return False
+        if pii_type == "CREDIT_CARD":
+            # Output filtering favours redaction over a false negative. Luhn is
+            # deliberately not mandatory because test/synthetic card values and
+            # some account identifiers do not pass it.
+            digits = re.sub(r"\D", "", value)
+            return len(digits) in range(13, 17) and len(set(digits)) > 1
+        return True
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
     @staticmethod
     def _dedupe(matches: List[PIIMatch]) -> List[PIIMatch]:
-        """Remove overlapping matches — keep widest."""
         if not matches:
             return []
-        matches = sorted(matches, key=lambda m: (m.start, -m.end))
-        out = [matches[0]]
-        for m in matches[1:]:
-            if m.start >= out[-1].end:
-                out.append(m)
-            elif m.end > out[-1].end:
-                out[-1] = m
-        return out
+        ordered = sorted(matches, key=lambda item: (item.start, -(item.end - item.start)))
+        output: List[PIIMatch] = []
+        for match in ordered:
+            if not output or match.start >= output[-1].end:
+                output.append(match)
+            elif (match.end - match.start) > (output[-1].end - output[-1].start):
+                output[-1] = match
+        return output
