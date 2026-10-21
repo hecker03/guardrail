@@ -59,19 +59,58 @@ class PatternMatcher:
          0.95),
     ]
 
+    # Patterns evaluated against a lower-case ASCII-alphanumeric view.
+# Gap limits are bounded to reduce accidental long-range matches.
+    COMPACT_PATTERNS: List[Tuple[str, re.Pattern, float]] = [
+        (
+            "obfuscated_instruction_override",
+            re.compile(
+                r"(?:ignore|disregard|forget)"
+                r"[a-z0-9]{0,40}"
+                r"(?:previous|prior|above)"
+                r"[a-z0-9]{0,16}"
+                r"(?:instructions?|prompts?|rules?)",
+                re.I,
+            ),
+            0.90,
+        ),
+        (
+            "obfuscated_safety_override",
+            re.compile(
+                r"(?:bypass|override|disable|turnoff)"
+                r"[a-z0-9]{0,32}"
+                r"(?:safety|security|filter|guardrail)",
+                re.I,
+            ),
+            0.88,
+        ),
+    ]
+
     def scan(self, text: str) -> Tuple[List[str], float]:
-        """
-        Returns (matched_pattern_names, max_threat_score)
-        """
         if not text:
             return [], 0.0
 
         matched: List[str] = []
         max_score = 0.0
 
+        # Normal visible-text patterns
         for name, regex, score in self.PATTERNS:
             if regex.search(text):
                 matched.append(name)
+                max_score = max(max_score, score)
+
+        # Compact inspection-only view
+        compact = re.sub(
+            r"[^a-z0-9]+",
+            "",
+            text.casefold(),
+        )
+
+        for name, regex, score in self.COMPACT_PATTERNS:
+            if regex.search(compact):
+                if name not in matched:
+                    matched.append(name)
+
                 max_score = max(max_score, score)
 
         return matched, max_score
