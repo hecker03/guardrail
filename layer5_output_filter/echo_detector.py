@@ -1,5 +1,3 @@
-# guardrail/layer5_output_filter/echo_detector.py
-
 import re
 from typing import Set, Tuple
 from difflib import SequenceMatcher
@@ -7,47 +5,39 @@ from .config import OutputFilterConfig, DEFAULT_CONFIG
 
 
 class PromptEchoDetector:
-    """
-    Detects when the model echoes back parts of the system prompt
-    (a common jailbreak success indicator).
-    """
+    """Detect substantial system-prompt reuse without returning prompt text."""
 
     def __init__(self, config: OutputFilterConfig = DEFAULT_CONFIG):
         self.cfg = config
 
-    def detect(
-        self,
-        output: str,
-        system_prompt: str,
-    ) -> Tuple[bool, float]:
-        """
-        Returns (echo_detected, similarity_score).
-        """
-        if not output or not system_prompt:
-            return False, 0.0
-        if len(output) < self.cfg.ECHO_MIN_LENGTH:
+    def detect(self, output: str, system_prompt: str) -> Tuple[bool, float]:
+        if not output or not system_prompt or len(output) < self.cfg.ECHO_MIN_LENGTH:
             return False, 0.0
 
-        # ---- 1) Exact n-gram overlap ----
         out_grams = self._ngrams(output, self.cfg.ECHO_NGRAM_SIZE)
         sys_grams = self._ngrams(system_prompt, self.cfg.ECHO_NGRAM_SIZE)
-
+        overlap = 0.0
         if out_grams and sys_grams:
-            overlap = len(out_grams & sys_grams) / len(out_grams)
+            common = len(out_grams & sys_grams)
+            # Use the smaller side so a leaked prompt embedded in a longer answer
+            # is still detected.
+            overlap = common / min(len(out_grams), len(sys_grams))
             if overlap >= self.cfg.ECHO_SIMILARITY_THRESHOLD:
                 return True, overlap
 
-        # ---- 2) SequenceMatcher on first 500 chars ----
-        a = output[:500].lower()
-        b = system_prompt[:500].lower()
-        ratio = SequenceMatcher(None, a, b).ratio()
+        output_norm = self._normalise(output)[:1000]
+        prompt_norm = self._normalise(system_prompt)[:1000]
+        ratio = SequenceMatcher(None, output_norm, prompt_norm).ratio()
+        score = max(overlap, ratio)
+        return score >= self.cfg.ECHO_SIMILARITY_THRESHOLD, score
 
-        return ratio >= self.cfg.ECHO_SIMILARITY_THRESHOLD, ratio
+    @staticmethod
+    def _normalise(text: str) -> str:
+        return " ".join(re.findall(r"\w+", text.casefold()))
 
-    # ------------------------------------------------------------------ #
     @staticmethod
     def _ngrams(text: str, n: int) -> Set[str]:
-        tokens = re.findall(r"\w+", text.lower())
+        tokens = re.findall(r"\w+", text.casefold())
         if len(tokens) < n:
             return set()
-        return {" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)}
+        return {" ".join(tokens[index:index+n]) for index in range(len(tokens) - n + 1)}

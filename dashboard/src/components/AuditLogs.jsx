@@ -8,65 +8,38 @@ export default function AuditLogs() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchAuditLogs()
+  let mounted = true;
+  const load = () => {
+    fetchAuditLogs({ limit: 100 })
       .then((data) => {
-        setLogs(Array.isArray(data) ? data : []);
-        setLoading(false);
+        if (mounted) {
+          setLogs(Array.isArray(data) ? data : []);
+          setLoading(false);
+        }
       })
       .catch((err) => {
-        console.warn("Could not load audit logs from API:", err);
-        // Fallback sample audit logs for demonstration if backend DB is not configured
-        setLogs([
-          {
-            id: 1,
-            request_id: "req-98f2-4bc1",
-            timestamp: new Date().toISOString(),
-            layer: "L1: Sanitization",
-            label: "Zero-Width Tags",
-            score: 0.85,
-            latency_ms: 1.24,
-            payload: "Stripped 4 invisible unicode tags",
-          },
-          {
-            id: 2,
-            request_id: "req-1a2c-7de8",
-            timestamp: new Date(Date.now() - 60000).toISOString(),
-            layer: "L2: Isolation",
-            label: "HMAC Verified",
-            score: 0.0,
-            latency_ms: 0.82,
-            payload: "System boundary enforced with XML delimiters",
-          },
-          {
-            id: 3,
-            request_id: "req-3f4a-9bb2",
-            timestamp: new Date(Date.now() - 180000).toISOString(),
-            layer: "L4: Classifier",
-            label: "S1: Override",
-            score: 0.94,
-            latency_ms: 24.5,
-            payload: "DAN injection attempt detected",
-          },
-          {
-            id: 4,
-            request_id: "req-7c8d-11e4",
-            timestamp: new Date(Date.now() - 360000).toISOString(),
-            layer: "L5: Output Filter",
-            label: "PII Redaction",
-            score: 0.72,
-            latency_ms: 2.15,
-            payload: "Masked credit card number and email address",
-          },
-        ]);
-        setLoading(false);
+        console.error("Could not load audit logs:", err);
+        if (mounted) {
+          setLogs([]);
+          setLoading(false);
+        }
       });
+  };
+
+  load();
+  const timer = setInterval(load, 3000);
+
+  return () => {
+    mounted = false;
+    clearInterval(timer);
+  };
   }, []);
 
   return (
     <div className="audit-logs">
       <h1>Audit Logs</h1>
       <p style={{ color: "var(--muted)", marginBottom: "20px" }}>
-        Real-time security audit trails across all 5 GuardRail defense layers.
+        Live security events from currently integrated GuardRail layers.
       </p>
 
       {loading ? (

@@ -28,7 +28,7 @@ def test_basic_isolation(isolator):
     assert result.action in (IsolationAction.PASS, IsolationAction.ISOLATED)
     assert "<guardrail:system>" in result.isolated_prompt
     assert "<guardrail:user>" in result.isolated_prompt
-    assert result.integrity_status == IntegrityStatus.VERIFIED
+    assert result.integrity_status == IntegrityStatus.GENERATED
 
 
 def test_signature_and_nonce_generated(isolator):
@@ -111,12 +111,14 @@ def test_privilege_escalation_warned(isolator):
 # ---------------------------------------------------------------------- #
 def test_inbound_signature_verified(isolator):
     blocks = _blocks()
-    signed = isolator.isolate(blocks)
+    signed = isolator.isolate(blocks, request_id="req-1", session_id="session-1")
     result = isolator.isolate(
         _blocks(),
         inbound_signature=signed.signature,
         inbound_nonce=signed.nonce,
         inbound_timestamp=signed.timestamp,
+        request_id="req-1",
+        session_id="session-1",
     )
     assert result.integrity_status == IntegrityStatus.VERIFIED
 
