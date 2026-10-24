@@ -7,6 +7,7 @@ from .homoglyph_detector import HomoglyphDetector
 from .encoding_normalizer import EncodingNormalizer
 from .patterns import PatternMatcher
 from .decoder_inspector import BoundedDecoderInspector
+from .lexical_analyzer import LexicalAnalyzer
 
 
 class InputSanitizer:

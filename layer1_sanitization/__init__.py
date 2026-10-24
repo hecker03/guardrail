@@ -1,8 +1,13 @@
-# guardrail/layer1_sanitization/__init__.py
-
 from .sanitizer import InputSanitizer
 from .models import SanitizationResult, ThreatLevel, SanitizationAction
 from .config import SanitizationConfig, DEFAULT_CONFIG
+from .lexical_analyzer import (
+    LexicalAnalyzer,
+    LexicalAnalysis,
+    LexicalFinding,
+    LexicalToken,
+    TokenKind,
+)
 
 __all__ = [
     "InputSanitizer",
@@ -11,4 +16,9 @@ __all__ = [
     "SanitizationAction",
     "SanitizationConfig",
     "DEFAULT_CONFIG",
+    "LexicalAnalyzer",
+    "LexicalAnalysis",
+    "LexicalFinding",
+    "LexicalToken",
+    "TokenKind",
 ]

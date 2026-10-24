@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -14,7 +14,25 @@ class ThreatLevel(str, Enum):
 class SanitizationAction(str, Enum):
     PASS = "pass"
     SANITIZED = "sanitized"
-    REJECTED = "rejected"
+    FLAGGED = "flagged"          # candidate requires contextual review
+    REJECTED = "rejected"        # hard reject; do not continue processing
+
+
+class LexicalFindingResult(BaseModel):
+    """Serializable lexical candidate, not a maliciousness verdict.
+
+    ``start``/``end`` and token indexes are relative to ``source_view``. For
+    decoded views they are not offsets into the raw user prompt.
+    """
+
+    rule_id: str
+    start: int
+    end: int
+    token_start: int
+    token_end: int
+    match_basis: List[str] = Field(default_factory=list)
+    requires_context: bool = True
+    source_view: str = "normalized"
 
 
 class SanitizationResult(BaseModel):
@@ -32,6 +50,8 @@ class SanitizationResult(BaseModel):
     homoglyphs_detected: Dict[str, str] = Field(default_factory=dict)
     patterns_matched: List[str] = Field(default_factory=list)
     decoded_views_scanned: List[str] = Field(default_factory=list)
+    lexical_findings: List[LexicalFindingResult] = Field(default_factory=list)
+    requires_context: bool = False
     transformations: List[str] = Field(default_factory=list)
     original_sha256: str = ""
     sanitized_sha256: str = ""
