@@ -88,3 +88,21 @@ def test_dfa_marks_system_override_and_hidden_prompt_as_context_candidates():
         assert finding.requires_context is True
         assert text[finding.start:finding.end]
 
+
+def test_dfa_flags_simple_ignore_instructions_phrase_for_context():
+    analysis = LexicalAnalyzer().analyze("ignore instructions")
+    assert any(
+        finding.rule_id == "instruction_override_simple_candidate"
+        and finding.requires_context
+        for finding in analysis.findings
+    )
+
+
+def test_lexer_records_system_tag_spans():
+    text = "<|system|>trusted text</system>"
+    analysis = LexicalAnalyzer().analyze(text)
+    tags = [finding for finding in analysis.findings if finding.rule_id == "system_tag_span_candidate"]
+
+    assert len(tags) == 2
+    assert [text[f.start:f.end] for f in tags] == ["<|system|>", "</system>"]
+

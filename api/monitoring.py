@@ -1,154 +1,169 @@
+"""Bounded, process-local monitoring events for Phase-I live dashboards.
+
+This module intentionally stores only request metadata and layer outcome labels.
+It does not retain request/response bodies, write to PostgreSQL, or provide a
+persistent security-audit trail. Data is lost when the process restarts.
+"""
+
+from __future__ import annotations
+
 from collections import deque
 from datetime import datetime, timezone
-from threading import Lock
-from typing import Any
-import asyncio
+import os
+import threading
 import uuid
+from typing import Any, Iterable, Optional
 
 
-class MonitoringStore:
-    def __init__(self, max_events: int = 2000):
-        self._events = deque(maxlen=max_events)
-        self._lock = Lock()
-        self._subscribers: set[asyncio.Queue] = set()
+DEFAULT_EVENT_CAPACITY = 500
+MAX_EVENT_CAPACITY = 10_000
 
-    async def record(
+
+def _configured_capacity() -> int:
+    try:
+        capacity = int(os.getenv("GUARDRAIL_LIVE_EVENT_CAPACITY", DEFAULT_EVENT_CAPACITY))
+    except (TypeError, ValueError):
+        return DEFAULT_EVENT_CAPACITY
+    return max(10, min(MAX_EVENT_CAPACITY, capacity))
+
+
+def _safe_labels(labels: Optional[Iterable[str]]) -> list[str]:
+    if labels is None:
+        return []
+    if isinstance(labels, str):
+        labels = (labels,)
+    safe: list[str] = []
+    for label in labels:
+        value = str(label).strip()[:100]
+        if value and value not in safe:
+            safe.append(value)
+        if len(safe) >= 25:
+            break
+    return safe
+
+
+def record_layer_result(
+    request: Any,
+    *,
+    layer: str,
+    action: str,
+    score: Optional[float] = None,
+    labels: Optional[Iterable[str]] = None,
+) -> None:
+    """Attach non-content outcome metadata to the current FastAPI request."""
+    results = getattr(request.state, "guardrail_layer_results", None)
+    if results is None:
+        results = []
+        request.state.guardrail_layer_results = results
+
+    item: dict[str, Any] = {
+        "layer": str(layer)[:16],
+        "action": str(action)[:40],
+    }
+    if score is not None:
+        try:
+            item["score"] = round(max(0.0, min(1.0, float(score))), 4)
+        except (TypeError, ValueError):
+            pass
+    safe = _safe_labels(labels)
+    if safe:
+        item["labels"] = safe
+    results.append(item)
+
+
+class InMemoryEventStore:
+    """Thread-safe, bounded ring buffer for live monitoring (not persistence)."""
+
+    def __init__(self, capacity: int = DEFAULT_EVENT_CAPACITY) -> None:
+        self.capacity = max(1, min(MAX_EVENT_CAPACITY, int(capacity)))
+        self._events: deque[dict[str, Any]] = deque(maxlen=self.capacity)
+        self._lock = threading.Lock()
+
+    def record_request(
         self,
         *,
         request_id: str,
-        layer: str,
-        label: str,
-        score: float,
+        method: str,
+        path: str,
+        status_code: int,
         latency_ms: float,
-        action: str,
-        payload: dict[str, Any] | None = None,
-    ) -> dict:
-        event = {
-            "id": str(uuid.uuid4()),
-            "request_id": request_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "layer": layer,
-            "label": label,
-            "score": round(float(score), 4),
-            "latency_ms": round(float(latency_ms), 3),
-            "action": action,
-            "payload": payload or {},
-        }
-
-        with self._lock:
-            self._events.appendleft(event)
-
-        dead_queues = []
-
-        for queue in list(self._subscribers):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                dead_queues.append(queue)
-
-        for queue in dead_queues:
-            self._subscribers.discard(queue)
-
-        return event
-
-    def list_events(self, limit: int = 100) -> list[dict]:
-        limit = max(1, min(limit, 500))
-
-        with self._lock:
-            return list(self._events)[:limit]
-
-    def alerts(self, limit: int = 50) -> list[dict]:
-        with self._lock:
-            events = list(self._events)
-
-        alerts = []
-
-        for event in events:
-            if (
-                event["action"] in {"rejected", "blocked"}
-                or event["score"] >= 0.85
-            ):
-                alerts.append({
-                    "id": event["id"],
-                    "severity": (
-                        "critical"
-                        if event["score"] >= 0.9
-                        else "warning"
-                    ),
-                    "title": (
-                        f'{event["layer"]} security event'
-                    ),
-                    "message": event["label"],
-                    "timestamp": event["timestamp"],
-                    "layer": event["layer"],
-                })
-
-        return alerts[:limit]
-
-    def stats(self) -> dict:
-        with self._lock:
-            events = list(self._events)
-
-        latencies = sorted(
-            event["latency_ms"]
-            for event in events
-            if event["latency_ms"] is not None
-        )
-
-        if latencies:
-            index = min(
-                len(latencies) - 1,
-                int(0.95 * len(latencies)),
-            )
-            p95 = latencies[index]
+        layer_results: Optional[Iterable[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        status = int(status_code)
+        if status in {400, 401, 403, 409}:
+            outcome = "blocked"
+        elif status >= 500:
+            outcome = "error"
+        elif status >= 400:
+            outcome = "client_error"
         else:
-            p95 = 0.0
+            outcome = "success"
 
-        blocked = sum(
-            event["action"] in {"rejected", "blocked"}
-            for event in events
-        )
-
-        pii_redacted = sum(
-            event["layer"] == "L5"
-            and event["payload"].get("pii_count", 0) > 0
-            for event in events
-        )
-
-        layer_counts = {}
-
-        for event in events:
-            key = (
-                event["layer"],
-                event["label"],
-            )
-            layer_counts[key] = layer_counts.get(key, 0) + 1
-
-        layer_breakdown = [
-            {
-                "layer": layer,
-                "label": label,
-                "count": count,
+        # Copy a bounded metadata-only subset. Do not accept request/response
+        # payloads or arbitrary dictionaries from a route.
+        safe_layers = []
+        for result in layer_results or ():
+            if not isinstance(result, dict):
+                continue
+            item: dict[str, Any] = {
+                "layer": str(result.get("layer", ""))[:16],
+                "action": str(result.get("action", ""))[:40],
             }
-            for (layer, label), count in layer_counts.items()
-        ]
+            if result.get("score") is not None:
+                try:
+                    item["score"] = round(max(0.0, min(1.0, float(result["score"]))), 4)
+                except (TypeError, ValueError):
+                    pass
+            labels = _safe_labels(result.get("labels"))
+            if labels:
+                item["labels"] = labels
+            safe_layers.append(item)
+            if len(safe_layers) >= 10:
+                break
 
-        return {
-            "total_requests": len(events),
-            "attacks_blocked": blocked,
-            "pii_redacted": pii_redacted,
-            "p95_latency_ms": round(p95, 3),
-            "timeline": [],
-            "layer_breakdown": layer_breakdown,
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "request_id": str(request_id)[:80],
+            "method": str(method).upper()[:12],
+            "path": str(path)[:200],
+            "status_code": status,
+            "outcome": outcome,
+            "latency_ms": round(max(0.0, float(latency_ms)), 3),
+            "layer_results": safe_layers,
         }
+        with self._lock:
+            self._events.append(event)
+        return dict(event)
 
-    def subscribe(self) -> asyncio.Queue:
-        queue = asyncio.Queue(maxsize=200)
-        self._subscribers.add(queue)
-        return queue
+    def latest(self, limit: int = 100) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(self.capacity, int(limit)))
+        with self._lock:
+            selected = list(self._events)[-bounded_limit:]
+        return [dict(event) for event in reversed(selected)]
 
-    def unsubscribe(self, queue: asyncio.Queue) -> None:
-        self._subscribers.discard(queue)
+    def after(self, event_id: Optional[str], limit: int = 100) -> list[dict[str, Any]]:
+        """Return events newer than a stream cursor, oldest first."""
+        bounded_limit = max(1, min(self.capacity, int(limit)))
+        with self._lock:
+            events = list(self._events)
+        if not events:
+            return []
+        if not event_id:
+            return [dict(event) for event in events[-bounded_limit:]]
+        cursor_index = next(
+            (index for index, event in enumerate(events) if event["event_id"] == event_id),
+            None,
+        )
+        if cursor_index is None:
+            # A stale cursor may have fallen out of the bounded ring buffer.
+            return [dict(event) for event in events[-bounded_limit:]]
+        return [dict(event) for event in events[cursor_index + 1:cursor_index + 1 + bounded_limit]]
+
+    def clear(self) -> None:
+        """Clear process-local events; useful for tests and local development."""
+        with self._lock:
+            self._events.clear()
 
 
-monitoring_store = MonitoringStore()
+live_events = InMemoryEventStore(_configured_capacity())

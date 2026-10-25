@@ -50,6 +50,7 @@ class SanitizationResult(BaseModel):
     homoglyphs_detected: Dict[str, str] = Field(default_factory=dict)
     patterns_matched: List[str] = Field(default_factory=list)
     decoded_views_scanned: List[str] = Field(default_factory=list)
+    inspection_views_scanned: List[str] = Field(default_factory=list)
     lexical_findings: List[LexicalFindingResult] = Field(default_factory=list)
     requires_context: bool = False
     transformations: List[str] = Field(default_factory=list)

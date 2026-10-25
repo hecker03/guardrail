@@ -1,5 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
+from guardrail.api.monitoring import record_layer_result
 
 router = APIRouter(prefix="/v1/classify", tags=["layer4"])
 _classifier = None
@@ -19,5 +20,13 @@ class ClassifyRequest(BaseModel):
 
 
 @router.post("")
-async def classify_endpoint(req: ClassifyRequest):
-    return get_classifier().classify(req.text, explain=req.explain).model_dump()
+async def classify_endpoint(req: ClassifyRequest, request: Request):
+    result = get_classifier().classify(req.text, explain=req.explain)
+    record_layer_result(
+        request,
+        layer="L4",
+        action="classified",
+        score=result.confidence,
+        labels=[result.label],
+    )
+    return result.model_dump()

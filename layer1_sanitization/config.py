@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import FrozenSet
+from typing import FrozenSet, Optional
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,7 @@ class SanitizationConfig:
     STRIP_OR_FLAG: str = "sanitize"       # sanitize | reject
     NORMALIZE_UNICODE: bool = True
     INSPECT_ENCODINGS: bool = True
+    SUSPICIOUS_TOKEN_DICTIONARY_PATH: Optional[str] = None
     LOG_SANITIZED_CONTENT: bool = False
 
 

@@ -1,17 +1,5 @@
-from . import (
-    sanitize,
-    isolate,
-    classify,
-    filter,
-    pipeline,
-    monitoring,
-)
+# guardrail/api/routes/__init__.py
 
-__all__ = [
-    "sanitize",
-    "isolate",
-    "classify",
-    "filter",
-    "pipeline",
-    "monitoring",
-]
+from . import sanitize, isolate, classify, filter, pipeline, monitoring
+
+__all__ = ["sanitize", "isolate", "classify", "filter", "pipeline", "monitoring"]

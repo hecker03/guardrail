@@ -1,9 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from guardrail.api.monitoring import record_layer_result
 from guardrail.api.runtime import isolator
 from guardrail.layer2_isolation import RoleBlock, IsolationAction
-from guardrail.api.monitoring import monitoring_store
 
 router = APIRouter(prefix="/v1/isolate", tags=["layer2"])
 
@@ -25,7 +25,7 @@ class IsolateRequest(BaseModel):
 
 
 @router.post("")
-async def isolate_endpoint(req: IsolateRequest):
+async def isolate_endpoint(req: IsolateRequest, request: Request):
     blocks = [RoleBlock(
         role=block.role,
         content=block.content,
@@ -43,23 +43,11 @@ async def isolate_endpoint(req: IsolateRequest):
         capability_scope=req.capability_scope,
         policy_version=req.policy_version,
     )
-    await monitoring_store.record(
-        request_id=result.request_id or req.request_id or "unknown",
+    record_layer_result(
+        request,
         layer="L2",
-        label=result.integrity_status.value,
-        score=(
-            1.0
-            if result.action == IsolationAction.REJECTED
-            else 0.0
-        ),
-        latency_ms=result.processing_time_ms or 0.0,
         action=result.action.value,
-        payload={
-            "integrity_status": result.integrity_status.value,
-            "warnings": result.warnings,
-            "boundaries_enforced": result.boundaries_enforced,
-            "policy_version": result.policy_version,
-        },
+        labels=[result.integrity_status.value],
     )
     if result.action == IsolationAction.REJECTED:
         raise HTTPException(status_code=400, detail={

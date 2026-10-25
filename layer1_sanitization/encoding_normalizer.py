@@ -5,11 +5,12 @@ from typing import Tuple
 
 
 class EncodingNormalizer:
-    """
-    Applies canonical Unicode normalization and encoding cleanup:
-      - NFKC to collapse compatibility forms
-      - Strips null bytes and unpaired surrogates
-      - Handles HTML entities, percent-encoding, base64 hints
+    """Apply character-level cleanup to a single text view.
+
+    This class removes null bytes and unpaired-surrogate artifacts and applies
+    NFKC. URL, HTML-entity, hexadecimal-escape, and Base64 views are generated
+    separately by :class:`BoundedDecoderInspector` so decoded content is not
+    silently substituted into the caller's prompt.
     """
 
     def __init__(self, apply_nfkc: bool = True):

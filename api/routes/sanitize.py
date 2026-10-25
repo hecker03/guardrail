@@ -1,9 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from guardrail.api.monitoring import record_layer_result
 from guardrail.api.runtime import sanitizer
 from guardrail.layer1_sanitization import SanitizationAction
-import uuid
-from guardrail.api.monitoring import monitoring_store
 
 router = APIRouter(prefix="/v1/sanitize", tags=["layer1"])
 
@@ -13,29 +12,15 @@ class SanitizeRequest(BaseModel):
 
 
 @router.post("")
-async def sanitize_endpoint(req: SanitizeRequest):
+async def sanitize_endpoint(req: SanitizeRequest, request: Request):
     result = sanitizer.sanitize(req.text)
-    request_id = str(uuid.uuid4())
-
-    await monitoring_store.record(
-        request_id=request_id,
+    record_layer_result(
+        request,
         layer="L1",
-        label=(
-            result.patterns_matched[0]
-            if result.patterns_matched
-            else result.action.value
-        ),
-        score=result.threat_score,
-        latency_ms=result.processing_time_ms or 0.0,
         action=result.action.value,
-        payload={
-            "patterns": result.patterns_matched,
-            "transformations": result.transformations,
-            "removed_unicode_tags": result.removed_unicode_tags,
-            "removed_zero_width": result.removed_zero_width,
-        },
+        score=result.threat_score,
+        labels=result.patterns_matched,
     )
-
     if result.action == SanitizationAction.REJECTED:
         raise HTTPException(status_code=400, detail={
             "error": "input_rejected",
